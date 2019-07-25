@@ -24,6 +24,12 @@ type Client struct {
 	WriteTimeout time.Duration
 }
 
+// Conn 同net.Conn
+type Conn = net.Conn
+
+// Addr 等价net.Addr
+type Addr = net.Addr
+
 var (
 	// ErrWrongNetworkType 错误的network值
 	ErrWrongNetworkType = errors.New("wrong network type")
@@ -34,7 +40,7 @@ var (
 )
 
 // Dial 发起proxy代理连接, network允许的值，tcp、udp
-func (c *Client) Dial(network, address string) (*Conn, error) {
+func (c *Client) Dial(network string, address string) (Conn, error) {
 
 	var (
 		conn net.Conn
@@ -44,6 +50,13 @@ func (c *Client) Dial(network, address string) (*Conn, error) {
 	if network != "tcp" && network != "udp" {
 		return nil, ErrWrongNetworkType
 	}
+
+	var (
+		// atype 0x01 ipv4, 0x03 domain, 0x04 ipv6
+		atype   byte
+		dstaddr []byte
+		dstport []byte
+	)
 
 	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
@@ -56,6 +69,22 @@ func (c *Client) Dial(network, address string) (*Conn, error) {
 	}
 
 	ip := net.ParseIP(host)
+
+	if ip == nil {
+		atype = 0x03
+		dstaddr = []byte{byte(len(host))}
+		dstaddr = append(dstaddr, []byte(host)...)
+	} else {
+		if ip.DefaultMask() == nil {
+			atype = 0x04
+			dstaddr = ip
+		} else {
+			atype = 0x01
+			dstaddr = ip.To4()[:4]
+		}
+	}
+	dstport = []byte{0x00, 0x00}
+	binary.BigEndian.PutUint16(dstport, uint16(port))
 
 	if c.ConnectionTimeout <= 0 {
 		c.ConnectionTimeout = time.Second * 3
@@ -155,29 +184,13 @@ func (c *Client) Dial(network, address string) (*Conn, error) {
 	}
 
 	// 与socks5服务器握手完毕，准备向目标服务器发起连接
-	var cmd byte
 	if network == "tcp" {
-		cmd = 0x01
+		data = []byte{0x05, 0x01, 0x00, atype}
+		data = append(data, dstaddr...)
+		data = append(data, dstport...)
 	} else {
-		cmd = 0x03
+		data = []byte{0x05, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	}
-
-	data = []byte{0x05, cmd, 0x00}
-	if ip == nil { //为域名
-		data = append(data, 0x03, uint8(len(host)))
-		data = append(data, []byte(host)...)
-	} else { //为ip
-		if ip.DefaultMask() == nil { //为ipv6
-			data = append(data, 0x04)
-			data = append(data, ip...)
-		} else { //为ipv4
-			data = append(data, 0x01)
-			data = append(data, ip.To4()[0:4]...)
-		}
-	}
-	portData := []byte{0x00, 0x00}
-	binary.BigEndian.PutUint16(portData, uint16(port))
-	data = append(data, portData...)
 
 	err = conn.SetWriteDeadline(time.Now().Add(c.WriteTimeout))
 	if err != nil {
@@ -209,8 +222,20 @@ func (c *Client) Dial(network, address string) (*Conn, error) {
 	}
 
 	conn.SetDeadline(time.Time{})
-	warp := &Conn{
-		conn: conn,
+	var warp Conn
+	if network == "tcp" {
+		warp = &TCPConn{
+			conn: conn,
+		}
+	} else {
+		head := []byte{0x00, 0x00, 0x00}
+		head = append(head, atype)
+		head = append(head, dstaddr...)
+		head = append(head, dstport...)
+		warp = &UDPConn{
+			conn: conn,
+			head: head,
+		}
 	}
 	return warp, nil
 }
