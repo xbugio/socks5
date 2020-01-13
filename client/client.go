@@ -39,6 +39,12 @@ var (
 	ErrAuthFailed = errors.New("failed to auth")
 )
 
+// DialTimeout 设置连接超时后发起proxy代理连接, network允许的值，tcp、udp
+func (c *Client) DialTimeout(network string, address string, timeout time.Duration) (Conn, error) {
+	c.ConnectionTimeout = timeout
+	return c.Dial(network, address)
+}
+
 // Dial 发起proxy代理连接, network允许的值，tcp、udp
 func (c *Client) Dial(network string, address string) (Conn, error) {
 
